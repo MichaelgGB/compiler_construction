@@ -1,0 +1,21 @@
+class MyCoolProgram {
+    public static void main() {
+        int num;
+        char grade = 'A';
+        boolean isActive = true;
+
+        num = 10 + 20 * 2 / 5 - 3;
+        if (num > 15 && isActive) {
+            print(num);
+        } else if (num <= 10) {
+            print(0);
+        } else {
+            print(num + 1);
+        }
+
+        while (num > 0) {
+            num = num - 1;
+            print(num);
+        }
+    }
+}
