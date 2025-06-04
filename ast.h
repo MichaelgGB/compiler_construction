@@ -2,14 +2,18 @@
 #define AST_H
 
 #include <stddef.h> // For size_t
+// Ensure symbol_table_types.h is appropriate.
+// It should define TypeKind and at least forward declare 'struct Scope;' or define it.
+#include "symbol_table_types.h"
 
-// --- Forward Declarations for linked list nodes (VERY IMPORTANT for union/struct definitions) ---
-typedef struct StatementListNode StatementListNode;
-typedef struct VariableDeclarationListNode VariableDeclarationListNode;
+// Forward Declarations for Node Structures (struct keyword is good practice here)
+typedef struct AstNode AstNode;
 typedef struct ProgramNode ProgramNode;
 typedef struct ClassDeclarationNode ClassDeclarationNode;
 typedef struct MainMethodNode MainMethodNode;
+typedef struct StatementListNode StatementListNode;
 typedef struct StatementNode StatementNode;
+typedef struct VariableDeclarationListNode VariableDeclarationListNode;
 typedef struct VariableDeclarationNode VariableDeclarationNode;
 typedef struct AssignmentNode AssignmentNode;
 typedef struct IfStatementNode IfStatementNode;
@@ -18,79 +22,94 @@ typedef struct PrintStatementNode PrintStatementNode;
 typedef struct ReturnStatementNode ReturnStatementNode;
 typedef struct BlockStatementNode BlockStatementNode;
 typedef struct ExpressionNode ExpressionNode;
-typedef struct IdentifierNode IdentifierNode;
 typedef struct LiteralNode LiteralNode;
+typedef struct IdentifierNode IdentifierNode;
 typedef struct TypeNode TypeNode;
-typedef struct ClassBodyContent ClassBodyContent;
+// typedef struct Scope Scope; // Should be handled by symbol_table_types.h
 
-// --- Enum for general AST Node Types ---
-typedef enum
+// Structure to temporarily hold parsed class contents (fields and main method)
+// before they are assembled into a ClassDeclarationNode.
+// This is used in the parser (Bison) to accumulate these parts.
+typedef struct ParsedClassContents
 {
+    struct MainMethodNode *main_method;
+    struct VariableDeclarationListNode *var_decls;
+} ParsedClassContents;
+
+// --- Node Type Enumeration ---
+typedef enum AstNodeType
+{
+    // Program Structure
     NODE_PROGRAM,
     NODE_CLASS_DECLARATION,
     NODE_MAIN_METHOD,
     NODE_STATEMENT_LIST,
-    NODE_STATEMENT_VAR_DECL, // Specific types of statements
-    NODE_STATEMENT_ASSIGNMENT,
-    NODE_STATEMENT_IF,
-    NODE_STATEMENT_WHILE,
-    NODE_STATEMENT_PRINT,
-    NODE_STATEMENT_RETURN,
-    NODE_STATEMENT_BLOCK,
-    NODE_VARIABLE_DECLARATION,
     NODE_VARIABLE_DECLARATION_LIST,
+
+    // Statements (Generic StatementNode will have a 'kind' and a union)
+    // These enum values can be used for StatementNode.kind
+    NODE_STATEMENT_VAR_DECL_WRAPPER,   // If StatementNode wraps a VariableDeclarationNode
+    NODE_STATEMENT_ASSIGNMENT_WRAPPER, // If StatementNode wraps an AssignmentNode
+    NODE_STATEMENT_IF_WRAPPER,         // If StatementNode wraps an IfStatementNode
+    NODE_STATEMENT_WHILE_WRAPPER,      // If StatementNode wraps a WhileStatementNode
+    NODE_STATEMENT_PRINT_WRAPPER,      // If StatementNode wraps a PrintStatementNode
+    NODE_STATEMENT_RETURN_WRAPPER,     // If StatementNode wraps a ReturnStatementNode
+    NODE_STATEMENT_BLOCK_WRAPPER,      // If StatementNode wraps a BlockStatementNode
+    NODE_STATEMENT_EXPRESSION_WRAPPER, // For expression statements
+
+    // Concrete Node types (these are for the actual data structures)
+    NODE_VARIABLE_DECLARATION,
     NODE_ASSIGNMENT,
     NODE_IF_STATEMENT,
     NODE_WHILE_STATEMENT,
     NODE_PRINT_STATEMENT,
-    NODE_RETURN_STATEMENT, // Used for the ReturnStatementNode struct itself
+    NODE_RETURN_STATEMENT,
     NODE_BLOCK_STATEMENT,
+
+    // Expressions
     NODE_EXPRESSION_BINARY,
     NODE_EXPRESSION_UNARY,
     NODE_EXPRESSION_LITERAL,
     NODE_EXPRESSION_IDENTIFIER,
     NODE_EXPRESSION_ARRAY_ACCESS,
-    NODE_EXPRESSION_PARENTHESIZED,
-    NODE_EXPRESSION_BOOLEAN, // A general boolean expression (TRUE/FALSE)
-    NODE_IDENTIFIER,
+    NODE_EXPRESSION_PARENTHESIZED, // May not be needed if parser handles precedence
+    NODE_EXPRESSION_BOOLEAN,       // For TRUE/FALSE literals
+
+    // Literals
     NODE_LITERAL_INTEGER,
     NODE_LITERAL_FLOAT,
     NODE_LITERAL_CHAR,
     NODE_LITERAL_STRING,
-    NODE_TYPE_INT,
-    NODE_TYPE_CHAR,
-    NODE_TYPE_BOOLEAN,
-    NODE_TYPE_INT_ARRAY
+
+    // Types
+    NODE_TYPE, // Generic type node, specific kind in TypeNode.kind
+
+    // Identifier
+    NODE_IDENTIFIER
 } AstNodeType;
 
-// --- Enum for Statement Kinds (if you have one) ---
-typedef enum
+// --- Base AST Node Structure ---
+struct AstNode
 {
-    STMT_VAR_DECL,
-    STMT_ASSIGNMENT,
-    STMT_IF,
-    STMT_WHILE,
-    STMT_PRINT,
-    STMT_RETURN,
-    STMT_BLOCK,
-    STMT_EXPRESSION // If an expression can be a standalone statement
-} StatementKind;
+    AstNodeType node_type; // Renamed from 'type' to avoid conflict with 'TypeNode' or other uses
+    int line_number;
+};
 
-// --- Enum for Expression Kinds ---
-typedef enum
+// --- Expression Kind Enumeration ---
+typedef enum ExpressionKind
 {
     EXPR_BINARY,
     EXPR_UNARY,
     EXPR_LITERAL,
     EXPR_IDENTIFIER,
     EXPR_ARRAY_ACCESS,
-    EXPR_PARENTHESIZED,
-    EXPR_TRUE, // For boolean true literal
-    EXPR_FALSE // For boolean false literal
+    EXPR_PARENTHESIZED, // For ( expression )
+    EXPR_BOOLEAN_TRUE,  // For boolean true literal
+    EXPR_BOOLEAN_FALSE  // For boolean false literal
 } ExpressionKind;
 
-// --- Enum for Literal Kinds ---
-typedef enum
+// --- Literal Kind Enumeration ---
+typedef enum LiteralKind
 {
     LIT_INTEGER,
     LIT_FLOAT,
@@ -98,276 +117,237 @@ typedef enum
     LIT_STRING
 } LiteralKind;
 
-// --- Enum for Type Kinds (for variable types, return types, etc.) ---
-typedef enum
+// --- Statement Kind Enumeration (for the union in StatementNode) ---
+typedef enum StatementKind
 {
-    TYPE_INT,
-    TYPE_CHAR,
-    TYPE_BOOLEAN,
-    TYPE_INT_ARRAY,
-    TYPE_FLOAT,  // Added
-    TYPE_STRING, // Added
-    TYPE_VOID,   // Added (useful for function returns, expected return type)
-    TYPE_ERROR   // Added (to signify an error in type checking)
-} TypeKind;
+    STMT_KIND_VAR_DECL,
+    STMT_KIND_ASSIGNMENT,
+    STMT_KIND_IF,
+    STMT_KIND_WHILE,
+    STMT_KIND_PRINT,
+    STMT_KIND_RETURN,
+    STMT_KIND_BLOCK,
+    STMT_KIND_EXPRESSION // For expression statements, if any
+} StatementKind;
 
-// --- Base Node Structure ---
-typedef struct AstNode
-{
-    AstNodeType type; // The specific type of AST node
-    int line_number;  // Line number from source code
-    // Add common fields here, if any
-} AstNode;
+// --- Concrete Node Structures ---
 
-// Function to create a generic AST node (used internally by specific node creation functions)
-AstNode *create_node(AstNodeType type, size_t size, int line_number);
-
-// --- Specific AST Node Structures ---
-
-typedef struct ProgramNode
+struct ProgramNode
 {
     AstNode base;
     ClassDeclarationNode *class_decl;
-} ProgramNode;
+};
 
-typedef struct ClassDeclarationNode
+struct ClassDeclarationNode
 {
     AstNode base;
     IdentifierNode *name;
     MainMethodNode *main_method;
-    VariableDeclarationListNode *var_decls; // List of variable declarations in the class body
-} ClassDeclarationNode;
+    VariableDeclarationListNode *var_decls; // Field declarations
+    struct Scope *associated_scope;         // Scope for this class
+};
 
-typedef struct MainMethodNode
+struct MainMethodNode
 {
     AstNode base;
-    IdentifierNode *name;
+    IdentifierNode *name; // Should be "main"
     BlockStatementNode *body;
-} MainMethodNode;
+    struct Scope *associated_scope; // Scope for this method
+};
 
-typedef struct StatementNode
-{
-    AstNode base;
-    StatementKind kind; // Specific kind of statement
-    union
-    {
-        VariableDeclarationNode *var_decl_stmt; // For a standalone variable declaration as a statement
-        AssignmentNode *assignment_stmt;
-        IfStatementNode *if_stmt;
-        WhileStatementNode *while_stmt;
-        PrintStatementNode *print_stmt;
-        ReturnStatementNode *return_stmt;
-        BlockStatementNode *block_stmt;
-        ExpressionNode *expression_stmt; // If an expression can be a statement itself
-    } data;
-} StatementNode;
-
-typedef struct StatementListNode
+struct StatementListNode
 {
     AstNode base;
     StatementNode *statement;
-    struct StatementListNode *next;
-} StatementListNode;
+    StatementListNode *next;
+};
 
-typedef struct VariableDeclarationNode
+// Generic Statement Node (Wrapper)
+struct StatementNode // This is what rules like 'statement' in Bison will produce
 {
-    AstNode base;
-    TypeNode *var_type;
-    IdentifierNode *identifier;
-    ExpressionNode *initializer; // Optional: for declarations with initialization
-    int is_final;                // 1 if final, 0 otherwise
-} VariableDeclarationNode;
+    AstNode base;       // base.node_type would be one of NODE_STATEMENT_..._WRAPPER
+    StatementKind kind; // To distinguish the type in the union
+    union
+    {
+        // Pointers to the *actual* statement type nodes
+        VariableDeclarationNode *var_decl_data; // If kind is STMT_KIND_VAR_DECL
+        AssignmentNode *assignment_data;        // If kind is STMT_KIND_ASSIGNMENT
+        IfStatementNode *if_data;               // If kind is STMT_KIND_IF
+        WhileStatementNode *while_data;         // If kind is STMT_KIND_WHILE
+        PrintStatementNode *print_data;         // If kind is STMT_KIND_PRINT
+        ReturnStatementNode *return_data;       // If kind is STMT_KIND_RETURN
+        BlockStatementNode *block_data;         // If kind is STMT_KIND_BLOCK
+        ExpressionNode *expression_data;        // If kind is STMT_KIND_EXPRESSION
+    } data;
+};
 
-typedef struct VariableDeclarationListNode
+struct VariableDeclarationListNode
 {
     AstNode base;
     VariableDeclarationNode *declaration;
-    struct VariableDeclarationListNode *next;
-} VariableDeclarationListNode;
+    VariableDeclarationListNode *next;
+};
 
-typedef struct AssignmentNode
+struct VariableDeclarationNode
 {
-    AstNode base;
+    AstNode base; // base.node_type = NODE_VARIABLE_DECLARATION
+    TypeNode *var_type;
+    IdentifierNode *identifier;
+    ExpressionNode *initializer; // Optional
+    int is_final;
+};
+
+struct AssignmentNode
+{
+    AstNode base; // base.node_type = NODE_ASSIGNMENT
     IdentifierNode *target_identifier;
-    ExpressionNode *array_index; // NULL if not array assignment
+    ExpressionNode *array_index; // Optional: for array assignments like arr[i] = val
     ExpressionNode *value;
-} AssignmentNode;
+};
 
-typedef struct IfStatementNode
+struct IfStatementNode
 {
-    AstNode base;
+    AstNode base; // base.node_type = NODE_IF_STATEMENT
     ExpressionNode *condition;
-    StatementNode *then_branch;
-    StatementNode *else_branch; // NULL if no else
-} IfStatementNode;
+    StatementNode *then_branch; // This should be a generic StatementNode
+    StatementNode *else_branch; // Optional, also a generic StatementNode
+};
 
-typedef struct WhileStatementNode
+struct WhileStatementNode
 {
-    AstNode base;
+    AstNode base; // base.node_type = NODE_WHILE_STATEMENT
     ExpressionNode *condition;
-    StatementNode *body;
-} WhileStatementNode;
+    StatementNode *body; // This should be a generic StatementNode
+};
 
-typedef struct PrintStatementNode
+struct PrintStatementNode
 {
-    AstNode base;
+    AstNode base; // base.node_type = NODE_PRINT_STATEMENT
     ExpressionNode *expression;
-} PrintStatementNode;
+};
 
-typedef struct ReturnStatementNode
+struct ReturnStatementNode
 {
-    AstNode base;
-    ExpressionNode *expression; // The expression being returned
-} ReturnStatementNode;
+    AstNode base;               // base.node_type = NODE_RETURN_STATEMENT
+    ExpressionNode *expression; // Optional (for void methods)
+};
 
-typedef struct BlockStatementNode
+struct BlockStatementNode
 {
-    AstNode base;
-    StatementListNode *statements; // List of statements in the block
-} BlockStatementNode;
+    AstNode base; // base.node_type = NODE_BLOCK_STATEMENT
+    StatementListNode *statements;
+    struct Scope *associated_scope; // Scope for this block
+};
 
-typedef struct ExpressionNode
+struct ExpressionNode
 {
-    AstNode base;
-    ExpressionKind kind; // Specific kind of expression
-    TypeKind resolved_type;
+    AstNode base; // base.node_type will be one of NODE_EXPRESSION_...
+    ExpressionKind kind;
     union
     {
         struct
-        {
+        { // Binary Expression
             ExpressionNode *left;
-            int op; // Token type (e.g., TOKEN_PLUS)
+            int op_token; // Token for operator (e.g., TOKEN_PLUS from parser)
             ExpressionNode *right;
         } binary_expr;
         struct
-        {
-            int op; // Token type (e.g., TOKEN_MINUS, TOKEN_NOT)
+        {                 // Unary Expression
+            int op_token; // Token for operator (e.g., TOKEN_MINUS, TOKEN_NOT)
             ExpressionNode *operand;
         } unary_expr;
         LiteralNode *literal_expr;
         IdentifierNode *identifier_expr;
         struct
-        {
-            IdentifierNode *array_base;
-            ExpressionNode *index;
+        {                                     // Array Access
+            IdentifierNode *array_name_ident; // Changed from array_base to be clearer
+            ExpressionNode *index_expr;
         } array_access_expr;
-        ExpressionNode *parenthesized_expr; // For (expression)
-        // No specific data for boolean literals, their kind is enough
+        ExpressionNode *parenthesized_expr_val; // For ( expression )
+                                                // For boolean true/false, kind is EXPR_BOOLEAN_TRUE/EXPR_BOOLEAN_FALSE
+                                                // no extra data needed beyond 'kind'
     } data;
-} ExpressionNode;
+    TypeKind resolved_type; // Filled by semantic analyzer (from symbol_table_types.h)
+};
 
-typedef struct IdentifierNode
+struct LiteralNode
 {
-    AstNode base;
-    char *name;
-} IdentifierNode;
-
-typedef struct LiteralNode
-{
-    AstNode base;
+    AstNode base; // base.node_type will be one of NODE_LITERAL_...
     LiteralKind kind;
     union
     {
         int int_val;
         float float_val;
         char char_val;
-        char *string_val;
+        char *string_val; // Must be allocated (e.g. strdup) and freed
     } data;
-} LiteralNode;
-
-typedef struct TypeNode
-{
-    AstNode base;
-    TypeKind kind;
-} TypeNode;
-
-// Struct to hold combined content of class body (for Bison's semantic value)
-struct ClassBodyContent
-{ // Defined with a tag
-    MainMethodNode *main_method;
-    VariableDeclarationListNode *var_declarations;
 };
 
-// --- AST Node Creation Functions ---
+struct IdentifierNode
+{
+    AstNode base; // base.node_type = NODE_IDENTIFIER
+    char *name;   // Must be allocated (e.g. strdup) and freed
+};
+
+struct TypeNode
+{
+    AstNode base;  // base.node_type = NODE_TYPE
+    TypeKind kind; // e.g. TYPE_INT, TYPE_BOOLEAN, TYPE_INT_ARRAY from symbol_table_types.h
+};
+
+// --- AST Creation Function Prototypes ---
 ProgramNode *create_program_node(ClassDeclarationNode *class_decl, int line_number);
 ClassDeclarationNode *create_class_declaration_node(IdentifierNode *name, MainMethodNode *main_method, VariableDeclarationListNode *var_decls, int line_number);
 MainMethodNode *create_main_method_node(IdentifierNode *name, BlockStatementNode *body, int line_number);
 
-StatementNode *create_variable_declaration_statement(VariableDeclarationNode *var_decl, int line_number);
-StatementNode *create_assignment_statement(AssignmentNode *assignment, int line_number);
-StatementNode *create_if_statement_node(IfStatementNode *if_stmt, int line_number);
-StatementNode *create_while_statement_node(WhileStatementNode *while_stmt, int line_number);
-StatementNode *create_print_statement_node(PrintStatementNode *print_stmt, int line_number);
-StatementNode *create_return_statement_node(ReturnStatementNode *return_stmt, int line_number); // Expects ReturnStatementNode*
-StatementNode *create_block_statement_node(BlockStatementNode *block_stmt, int line_number);
+StatementListNode *create_statement_list_node(StatementNode *statement, StatementListNode *next_list_item); // Corrected param name
+VariableDeclarationListNode *create_variable_declaration_list_node(VariableDeclarationNode *declaration, VariableDeclarationListNode *next_list_item);
 
-StatementListNode *create_statement_list_node(StatementNode *statement, StatementListNode *next);
-
+// Concrete Node Creation
 VariableDeclarationNode *create_variable_declaration_node(TypeNode *var_type, IdentifierNode *identifier, ExpressionNode *initializer, int is_final, int line_number);
-VariableDeclarationListNode *create_variable_declaration_list_node(VariableDeclarationNode *declaration, VariableDeclarationListNode *next);
-
 AssignmentNode *create_assignment_node(IdentifierNode *target_identifier, ExpressionNode *array_index, ExpressionNode *value, int line_number);
-IfStatementNode *create_if_node(ExpressionNode *condition, StatementNode *then_branch, StatementNode *else_branch, int line_number);
-WhileStatementNode *create_while_node(ExpressionNode *condition, StatementNode *body, int line_number);
-PrintStatementNode *create_print_node(ExpressionNode *expression, int line_number);
-ReturnStatementNode *create_return_node(ExpressionNode *expression, int line_number); // NEW: Creates the actual ReturnStatementNode
-BlockStatementNode *create_block_node(StatementListNode *statements, int line_number);
+IfStatementNode *create_if_node(ExpressionNode *condition, StatementNode *then_branch, StatementNode *else_branch, int line_number); // Changed from create_if_statement_node to avoid clash
+WhileStatementNode *create_while_node(ExpressionNode *condition, StatementNode *body, int line_number);                              // Changed from create_while_statement_node
+PrintStatementNode *create_print_node(ExpressionNode *expression, int line_number);                                                  // Changed from create_print_statement_node
+ReturnStatementNode *create_return_node(ExpressionNode *expression, int line_number);                                                // Changed from create_return_statement_node
+BlockStatementNode *create_block_node(StatementListNode *statements, int line_number);                                               // Changed from create_block_statement_node
 
-ExpressionNode *create_binary_expression_node(ExpressionNode *left, int op, ExpressionNode *right, int line_number);
-ExpressionNode *create_unary_expression_node(int op, ExpressionNode *operand, int line_number);
+// Statement Wrapper Creation Functions (These create generic StatementNode*)
+StatementNode *create_variable_declaration_statement(VariableDeclarationNode *var_decl_data, int line_number);
+StatementNode *create_assignment_statement(AssignmentNode *assignment_data, int line_number);
+StatementNode *create_if_statement_wrapper_node(IfStatementNode *if_data, int line_number);             // To wrap IfStatementNode
+StatementNode *create_while_statement_wrapper_node(WhileStatementNode *while_data, int line_number);    // To wrap WhileStatementNode
+StatementNode *create_print_statement_wrapper_node(PrintStatementNode *print_data, int line_number);    // To wrap PrintStatementNode
+StatementNode *create_return_statement_wrapper_node(ReturnStatementNode *return_data, int line_number); // To wrap ReturnStatementNode
+StatementNode *create_block_statement_wrapper_node(BlockStatementNode *block_data, int line_number);    // To wrap BlockStatementNode
+
+// Expression Functions
+ExpressionNode *create_binary_expression_node(ExpressionNode *left, int op_token, ExpressionNode *right, int line_number);
+ExpressionNode *create_unary_expression_node(int op_token, ExpressionNode *operand, int line_number);
 ExpressionNode *create_literal_expression_node(LiteralNode *literal, int line_number);
 ExpressionNode *create_identifier_expression_node(IdentifierNode *identifier, int line_number);
-ExpressionNode *create_array_access_expression_node(IdentifierNode *array_base, ExpressionNode *index, int line_number);
+ExpressionNode *create_array_access_expression_node(IdentifierNode *array_name_ident, ExpressionNode *index_expr, int line_number);
 ExpressionNode *create_parenthesized_expression_node(ExpressionNode *inner_expr, int line_number);
-ExpressionNode *create_boolean_expression_node(int token_type, int line_number); // Uses TOKEN_TRUE/TOKEN_FALSE
+ExpressionNode *create_boolean_literal_expression_node(int is_true, int line_number); // For TRUE/FALSE, e.g., is_true=1 for true
 
-IdentifierNode *create_identifier_node(char *name, int line_number);
-
+// Other Node Creation Functions
+IdentifierNode *create_identifier_node(char *name, int line_number); // Name should be strdup'd by this function
 LiteralNode *create_int_literal_node(int value, int line_number);
 LiteralNode *create_float_literal_node(float value, int line_number);
 LiteralNode *create_char_literal_node(char value, int line_number);
-LiteralNode *create_string_literal_node(char *value, int line_number);
+LiteralNode *create_string_literal_node(char *value, int line_number); // Value should be strdup'd by this function
+TypeNode *create_type_node(TypeKind kind, int line_number);            // TypeKind from symbol_table_types.h
 
-TypeNode *create_type_node(TypeKind kind, int line_number);
-
-// --- AST Printing Functions ---
+// --- AST Printing Function Prototypes (for debugging) ---
+// (Keep your existing print function prototypes)
 void print_ast(ProgramNode *node, int indent);
-void print_program_node(ProgramNode *node, int indent);
-void print_class_declaration(ClassDeclarationNode *node, int indent);
-void print_main_method(MainMethodNode *node, int indent);
-void print_statements(StatementListNode *list, int indent);
-void print_statement(StatementNode *node, int indent);
-void print_block_statement_node(BlockStatementNode *node, int indent);
-void print_variable_declaration_node(VariableDeclarationNode *node, int indent);
-void print_variable_declaration_list(VariableDeclarationListNode *list, int indent); // Added declaration
-void print_assignment_node(AssignmentNode *node, int indent);
-void print_if_statement_node(IfStatementNode *node, int indent);
-void print_while_statement_node(WhileStatementNode *node, int indent);
-void print_print_statement_node(PrintStatementNode *node, int indent);
-void print_return_statement_node(ReturnStatementNode *node, int indent);
-void print_expression(ExpressionNode *node, int indent);
-void print_identifier(IdentifierNode *node, int indent);
-void print_literal(LiteralNode *node, int indent);
-void print_type(TypeNode *node, int indent);
-void print_indent(int indent); // Helper function
+// ... and so on for all node types ...
+const char *get_token_name_from_int(int token); // Changed from get_token_name to avoid potential conflicts
 
-// --- AST Memory Management Functions ---
+// --- AST Freeing Function Prototypes ---
+// (Keep your existing free function prototypes, ensure they handle all members, including strdup'd strings)
 void free_ast(ProgramNode *node);
-void free_statement_list_node(StatementListNode *node);
-void free_statement_node(StatementNode *node);
-void free_variable_declaration_node(VariableDeclarationNode *node);
-void free_variable_declaration_list_node(VariableDeclarationListNode *node);
-void free_assignment_node(AssignmentNode *node);
-void free_if_statement_node(IfStatementNode *node);
-void free_while_statement_node(WhileStatementNode *node);
-void free_print_statement_node(PrintStatementNode *node);
-void free_return_statement_node(ReturnStatementNode *node);
-void free_block_statement_node(BlockStatementNode *node);
-void free_expression_node(ExpressionNode *node);
-void free_identifier_node(IdentifierNode *node);
-void free_literal_node(LiteralNode *node);
-void free_type_node(TypeNode *node);
-void free_main_method_node(MainMethodNode *node);
-void free_class_declaration_node(ClassDeclarationNode *node);
+// ... and so on for all node types, ensuring to free sub-nodes and allocated strings ...
+void free_parsed_class_contents(ParsedClassContents *pcc); // Add if needed for cleanup on error
 
 #endif // AST_H

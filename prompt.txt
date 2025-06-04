@@ -1,0 +1,2198 @@
+I am creating a compiler for a subset of java, and the ir_generator is failng because of the function enter_scope it is using, since it creates a new scope which is empty, after semantic analysis and therefore it fails:
+here are the files: 
+ir_generator.c:
+
+#include "ir_generator.h"
+#include "tac.h"
+#include "symbol_table.h"
+#include "miniJava.tab.h" // Assuming this contains your TOKEN_ definitions
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Forward declarations for internal helper functions
+// Removed 'static' as they are likely declared globally in ir_generator.h
+TacOperand generate_ir_for_expression(ExpressionNode *expr_node);
+void generate_ir_for_statement(StatementNode *stmt_node);
+void generate_ir_for_statement_list(StatementListNode *stmt_list_node);
+void generate_ir_for_variable_declaration(VariableDeclarationNode *var_decl_node);
+void generate_ir_for_assignment(AssignmentNode *assign_node);
+void generate_ir_for_if_statement(IfStatementNode *if_stmt_node);
+void generate_ir_for_while_statement(WhileStatementNode *while_stmt_node);
+void generate_ir_for_print_statement(PrintStatementNode *print_stmt_node);
+void generate_ir_for_return_statement(ReturnStatementNode *return_stmt_node);
+void generate_ir_for_block_statement(BlockStatementNode *block_stmt_node);
+
+void generate_ir(ProgramNode *program_root)
+{
+    if (!program_root)
+    {
+        fprintf(stderr, "IR Gen Error: Program root is NULL.\n");
+        return;
+    }
+
+    // Access `class_decl` directly from `program_root`
+    if (program_root->class_decl && program_root->class_decl->main_method)
+    {
+        MainMethodNode *main_method = program_root->class_decl->main_method;
+
+        // *** CRITICAL ADDITION: Enter the main method's scope ***
+        // This ensures that 'current_scope' is set to the correct scope
+        // where 'num' (and other local variables) are declared.
+        enter_scope(); // Call to symbol_table.c
+
+        emit_tac(TAC_LABEL, create_tac_label_operand("main"), create_tac_none_operand(), create_tac_none_operand(), TYPE_VOID);
+        if (main_method->body)
+        {
+            generate_ir_for_block_statement(main_method->body);
+        }
+
+        // *** CRITICAL ADDITION: Exit the main method's scope ***
+        // This restores 'current_scope' to its parent (the global scope).
+        exit_scope(); // Call to symbol_table.c
+    }
+    else
+    {
+        fprintf(stderr, "IR Gen Error: No main method found.\n");
+    }
+}
+
+// --- Expression Generation ---
+TacOperand generate_ir_for_expression(ExpressionNode *expr_node)
+{
+    TacOperand result_op = create_tac_none_operand();
+
+    if (!expr_node)
+    {
+        fprintf(stderr, "IR Gen Error: NULL expression node.\n");
+        return result_op;
+    }
+
+    switch (expr_node->base.type)
+    {
+    case NODE_EXPRESSION_LITERAL:
+    {
+        LiteralNode *lit = expr_node->data.literal_expr;
+        if (!lit)
+        {
+            fprintf(stderr, "IR Gen Error: NULL literal in expression at line %d.\n", expr_node->base.line_number);
+            return result_op;
+        }
+
+        switch (lit->kind)
+        {
+        case LIT_INTEGER:
+            result_op = create_tac_int_literal_operand(lit->data.int_val);
+            break;
+        case LIT_FLOAT:
+            result_op = create_tac_float_literal_operand(lit->data.float_val);
+            break;
+        case LIT_CHAR:
+            result_op = create_tac_char_literal_operand(lit->data.char_val);
+            break;
+        case LIT_STRING:
+            result_op = create_tac_string_literal_operand(lit->data.string_val);
+            break;
+        default:
+            fprintf(stderr, "IR Gen Error: Unknown literal type %d at line %d.\n", lit->kind, lit->base.line_number);
+            break;
+        }
+        break;
+    }
+    case NODE_EXPRESSION_BOOLEAN:
+    {
+        result_op = create_tac_bool_literal_operand(expr_node->kind == EXPR_TRUE ? 1 : 0);
+        break;
+    }
+    case NODE_EXPRESSION_IDENTIFIER:
+    {
+        IdentifierNode *id_node = expr_node->data.identifier_expr;
+        if (!id_node)
+        {
+            fprintf(stderr, "IR Gen Error: NULL identifier in expression at line %d.\n", expr_node->base.line_number);
+            return result_op;
+        }
+
+        SymbolTableEntry *entry = lookup_symbol(id_node->name);
+        if (!entry)
+        {
+            fprintf(stderr, "IR Gen Error: Identifier '%s' not found at line %d.\n", id_node->name, expr_node->base.line_number);
+            exit(EXIT_FAILURE);
+        }
+        result_op = create_tac_var_operand(entry->name, entry->type);
+        break;
+    }
+    case NODE_EXPRESSION_BINARY:
+    {
+        TacOperand left_op = generate_ir_for_expression(expr_node->data.binary_expr.left);
+        TacOperand right_op = generate_ir_for_expression(expr_node->data.binary_expr.right);
+        TacOperand temp_res = create_tac_temp_operand(expr_node->resolved_type);
+
+        switch (expr_node->data.binary_expr.op)
+        {
+        case TOKEN_PLUS:
+            emit_tac(TAC_ADD, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_MINUS:
+            emit_tac(TAC_SUB, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_MULTIPLY:
+            emit_tac(TAC_MUL, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_DIVIDE:
+            emit_tac(TAC_DIV, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_MOD:
+            emit_tac(TAC_MOD, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_LT:
+            emit_tac(TAC_LT, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_GT:
+            emit_tac(TAC_GT, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_LEQ:
+            emit_tac(TAC_LEQ, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_GEQ:
+            emit_tac(TAC_GEQ, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_EQ:
+            emit_tac(TAC_EQ, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_NEQ:
+            emit_tac(TAC_NEQ, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_AND:
+            emit_tac(TAC_AND, temp_res, left_op, right_op, temp_res.type);
+            break;
+        case TOKEN_OR:
+            emit_tac(TAC_OR, temp_res, left_op, right_op, temp_res.type);
+            break;
+        default:
+            fprintf(stderr, "IR Gen Error: Unknown binary operator %d at line %d.\n", expr_node->data.binary_expr.op, expr_node->base.line_number);
+            break;
+        }
+        result_op = temp_res;
+        break;
+    }
+    case NODE_EXPRESSION_UNARY:
+    {
+        TacOperand operand_op = generate_ir_for_expression(expr_node->data.unary_expr.operand);
+        TacOperand temp_res = create_tac_temp_operand(expr_node->resolved_type);
+
+        switch (expr_node->data.unary_expr.op)
+        {
+        case TOKEN_MINUS:
+            emit_tac(TAC_UMINUS, temp_res, operand_op, create_tac_none_operand(), temp_res.type);
+            break;
+        case TOKEN_NOT:
+            emit_tac(TAC_NOT, temp_res, operand_op, create_tac_none_operand(), temp_res.type);
+            break;
+        default:
+            fprintf(stderr, "IR Gen Error: Unknown unary operator %d at line %d.\n", expr_node->data.unary_expr.op, expr_node->base.line_number);
+            break;
+        }
+        result_op = temp_res;
+        break;
+    }
+    case NODE_EXPRESSION_PARENTHESIZED:
+    {
+        result_op = generate_ir_for_expression(expr_node->data.parenthesized_expr);
+        break;
+    }
+    case NODE_EXPRESSION_ARRAY_ACCESS:
+    {
+        IdentifierNode *array_id_node = expr_node->data.array_access_expr.array_base;
+        ExpressionNode *index_expr = expr_node->data.array_access_expr.index;
+
+        if (!array_id_node || !index_expr)
+        {
+            fprintf(stderr, "IR Gen Error: Malformed array access at line %d.\n", expr_node->base.line_number);
+            exit(EXIT_FAILURE);
+        }
+
+        TacOperand array_op = create_tac_var_operand(array_id_node->name, TYPE_INT_ARRAY); // Array always TYPE_INT_ARRAY in MiniJava
+        TacOperand index_op = generate_ir_for_expression(index_expr);
+
+        result_op = create_tac_temp_operand(expr_node->resolved_type);
+        emit_tac(TAC_ARRAY_LOAD, result_op, array_op, index_op, result_op.type);
+        break;
+    }
+    default:
+        fprintf(stderr, "IR Gen Error: Unhandled expression type %d at line %d.\n", expr_node->base.type, expr_node->base.line_number);
+        exit(EXIT_FAILURE);
+    }
+    return result_op;
+}
+
+// --- Statement Generation ---
+void generate_ir_for_statement(StatementNode *stmt_node)
+{
+    if (!stmt_node)
+    {
+        fprintf(stderr, "IR Gen Error: NULL statement node.\n");
+        return;
+    }
+
+    switch (stmt_node->base.type)
+    {
+    case NODE_STATEMENT_VAR_DECL:
+        generate_ir_for_variable_declaration(stmt_node->data.var_decl_stmt);
+        break;
+    case NODE_STATEMENT_ASSIGNMENT:
+        generate_ir_for_assignment(stmt_node->data.assignment_stmt);
+        break;
+    case NODE_STATEMENT_IF:
+        generate_ir_for_if_statement(stmt_node->data.if_stmt);
+        break;
+    case NODE_STATEMENT_WHILE:
+        generate_ir_for_while_statement(stmt_node->data.while_stmt);
+        break;
+    case NODE_STATEMENT_PRINT:
+        generate_ir_for_print_statement(stmt_node->data.print_stmt);
+        break;
+    case NODE_STATEMENT_RETURN:
+        generate_ir_for_return_statement(stmt_node->data.return_stmt);
+        break;
+    case NODE_STATEMENT_BLOCK:
+        generate_ir_for_block_statement(stmt_node->data.block_stmt);
+        break;
+    default:
+        fprintf(stderr, "IR Gen Error: Unhandled statement type %d at line %d.\n", stmt_node->base.type, stmt_node->base.line_number);
+        exit(EXIT_FAILURE);
+    }
+}
+
+void generate_ir_for_statement_list(StatementListNode *stmt_list_node)
+{
+    StatementListNode *current = stmt_list_node;
+    while (current)
+    {
+        if (current->statement)
+        {
+            generate_ir_for_statement(current->statement);
+        }
+        current = current->next;
+    }
+}
+
+// --- Variable Declaration Generation ---
+void generate_ir_for_variable_declaration(VariableDeclarationNode *var_decl_node)
+{
+    if (!var_decl_node)
+        return;
+
+    TacOperand var_op = create_tac_var_operand(var_decl_node->identifier->name, var_decl_node->var_type->kind);
+
+    if (var_decl_node->initializer)
+    {
+        TacOperand initializer_op = generate_ir_for_expression(var_decl_node->initializer);
+        emit_tac(TAC_ASSIGN, var_op, initializer_op, create_tac_none_operand(), initializer_op.type);
+    }
+}
+
+// --- Assignment Generation ---
+void generate_ir_for_assignment(AssignmentNode *assign_node)
+{
+    if (!assign_node)
+        return;
+
+    TacOperand value_op = generate_ir_for_expression(assign_node->value);
+    TacOperand target_op;
+
+    if (assign_node->array_index)
+    { // Assignment to an array element (e.g., arr[i] = val)
+        IdentifierNode *array_id_node = assign_node->target_identifier;
+        ExpressionNode *index_expr = assign_node->array_index;
+
+        if (!array_id_node || !index_expr)
+        {
+            fprintf(stderr, "IR Gen Error: Malformed array assignment at line %d.\n", assign_node->base.line_number);
+            exit(EXIT_FAILURE);
+        }
+
+        TacOperand array_op = create_tac_var_operand(array_id_node->name, TYPE_INT_ARRAY);
+        TacOperand index_op = generate_ir_for_expression(index_expr);
+
+        emit_tac(TAC_ARRAY_STORE, value_op, array_op, index_op, value_op.type);
+    }
+    else
+    { // Simple variable assignment (e.g., x = 5)
+        SymbolTableEntry *entry = lookup_symbol(assign_node->target_identifier->name);
+        if (!entry)
+        {
+            fprintf(stderr, "IR Gen Error: Target identifier '%s' not found for assignment at line %d.\n", assign_node->target_identifier->name, assign_node->base.line_number);
+            exit(EXIT_FAILURE);
+        }
+        target_op = create_tac_var_operand(entry->name, entry->type);
+        emit_tac(TAC_ASSIGN, target_op, value_op, create_tac_none_operand(), value_op.type);
+    }
+}
+
+// --- If Statement Generation ---
+void generate_ir_for_if_statement(IfStatementNode *if_stmt_node)
+{
+    if (!if_stmt_node)
+        return;
+
+    TacOperand cond_op = generate_ir_for_expression(if_stmt_node->condition);
+
+    char *else_label = generate_new_label_name();
+    char *end_if_label = generate_new_label_name();
+
+    emit_tac(TAC_IF_NOT_GOTO, cond_op, create_tac_label_operand(else_label), create_tac_none_operand(), cond_op.type);
+
+    generate_ir_for_statement(if_stmt_node->then_branch);
+    emit_tac(TAC_GOTO, create_tac_label_operand(end_if_label), create_tac_none_operand(), create_tac_none_operand(), TYPE_VOID);
+
+    emit_tac(TAC_LABEL, create_tac_label_operand(else_label), create_tac_none_operand(), create_tac_none_operand(), TYPE_VOID);
+    if (if_stmt_node->else_branch)
+    {
+        generate_ir_for_statement(if_stmt_node->else_branch);
+    }
+    emit_tac(TAC_LABEL, create_tac_label_operand(end_if_label), create_tac_none_operand(), create_tac_none_operand(), TYPE_VOID);
+}
+
+// --- While Statement Generation ---
+void generate_ir_for_while_statement(WhileStatementNode *while_stmt_node)
+{
+    if (!while_stmt_node)
+        return;
+
+    char *loop_start_label = generate_new_label_name();
+    char *loop_end_label = generate_new_label_name();
+
+    emit_tac(TAC_LABEL, create_tac_label_operand(loop_start_label), create_tac_none_operand(), create_tac_none_operand(), TYPE_VOID);
+
+    TacOperand cond_op = generate_ir_for_expression(while_stmt_node->condition);
+    emit_tac(TAC_IF_NOT_GOTO, cond_op, create_tac_label_operand(loop_end_label), create_tac_none_operand(), cond_op.type);
+
+    generate_ir_for_statement(while_stmt_node->body);
+
+    emit_tac(TAC_GOTO, create_tac_label_operand(loop_start_label), create_tac_none_operand(), create_tac_none_operand(), TYPE_VOID);
+
+    emit_tac(TAC_LABEL, create_tac_label_operand(loop_end_label), create_tac_none_operand(), create_tac_none_operand(), TYPE_VOID);
+}
+
+// --- Print Statement Generation ---
+void generate_ir_for_print_statement(PrintStatementNode *print_stmt_node)
+{
+    if (!print_stmt_node || !print_stmt_node->expression)
+        return;
+
+    TacOperand expr_op = generate_ir_for_expression(print_stmt_node->expression);
+    emit_tac(TAC_PRINT, expr_op, create_tac_none_operand(), create_tac_none_operand(), expr_op.type);
+}
+
+// --- Return Statement Generation ---
+void generate_ir_for_return_statement(ReturnStatementNode *return_stmt_node)
+{
+    if (!return_stmt_node)
+        return;
+
+    if (return_stmt_node->expression)
+    {
+        TacOperand expr_op = generate_ir_for_expression(return_stmt_node->expression);
+        emit_tac(TAC_RETURN, expr_op, create_tac_none_operand(), create_tac_none_operand(), expr_op.type);
+    }
+    else
+    {
+        emit_tac(TAC_RETURN, create_tac_none_operand(), create_tac_none_operand(), create_tac_none_operand(), TYPE_VOID);
+    }
+}
+
+// --- Block Statement Generation ---
+void generate_ir_for_block_statement(BlockStatementNode *block_stmt_node)
+{
+    if (!block_stmt_node)
+        return;
+
+    // *** CRITICAL ADDITION: Enter the new block's scope ***
+    // This creates a new, nested scope for statements within this block.
+    enter_scope(); // Call to symbol_table.c
+
+    generate_ir_for_statement_list(block_stmt_node->statements);
+
+    // *** CRITICAL ADDITION: Exit the current block's scope ***
+    // This returns 'current_scope' to the parent scope where this block is defined.
+    exit_scope(); // Call to symbol_table.c
+}
+
+semantic_analyzer.c
+#include <stdio.h>
+#include <string.h>
+#include "semantic_analyzer.h"
+#include "ast.h"          // For node structures and enums
+#include "symbol_table.h" // For symbol table operations
+#include "miniJava.tab.h"
+
+int semantic_error_count = 0;
+
+void report_semantic_error(const char *message, int line_number)
+{
+    fprintf(stderr, "Semantic Error line %d: %s\n", line_number, message);
+    semantic_error_count++;
+}
+
+// Main entry point
+void analyze_semantics(ProgramNode *program_root)
+{
+    if (!program_root)
+        return;
+    semantic_error_count = 0;
+    current_scope = NULL; // Initialize current_scope for the whole analysis pass
+    analyze_program_node(program_root);
+
+    if (semantic_error_count == 0)
+    {
+        printf("Semantic analysis successful.\n");
+    }
+    else
+    {
+        printf("Semantic analysis found %d error(s).\n", semantic_error_count);
+    }
+}
+
+void analyze_program_node(ProgramNode *node)
+{
+    if (!node)
+        return;
+    analyze_class_declaration_node(node->class_decl);
+}
+
+void analyze_class_declaration_node(ClassDeclarationNode *node)
+{
+    if (!node)
+        return;
+
+    enter_scope(); // Class scope
+
+    // Check class name
+    if (!node->name || !node->name->name)
+    {
+        report_semantic_error("Class declaration missing name.", node->base.line_number);
+    }
+
+    // Process variable declarations (fields) in the class
+    VariableDeclarationListNode *vdl = node->var_decls;
+    while (vdl)
+    {
+        analyze_variable_declaration_node(vdl->declaration);
+        vdl = vdl->next;
+    }
+
+    if (node->main_method)
+    {
+        if (strcmp(node->main_method->name->name, "main") != 0)
+        {
+            report_semantic_error("Main method must be named 'main'.", node->main_method->base.line_number);
+        }
+        analyze_main_method_node(node->main_method);
+    }
+    else
+    {
+        report_semantic_error("No main method found.", node->base.line_number);
+    }
+
+    exit_scope(); // Exit class scope
+}
+
+void analyze_main_method_node(MainMethodNode *node)
+{
+    if (!node)
+        return;
+
+    enter_scope(); // Scope for main method (parameters and local variables)
+
+    // Analyze the body of the main method.
+    // The main method in Java is void.
+    analyze_block_statement_node(node->body, TYPE_VOID);
+
+    exit_scope(); // Exit main method scope
+}
+
+void analyze_block_statement_node(BlockStatementNode *node, TypeKind expected_return_type)
+{
+    if (!node)
+        return;
+
+    // Each block can have its own scope for local variables
+    enter_scope();
+    analyze_statement_list_node(node->statements, expected_return_type);
+    exit_scope();
+}
+
+void analyze_statement_list_node(StatementListNode *list, TypeKind expected_return_type)
+{
+    StatementListNode *current = list;
+    while (current)
+    {
+        if (current->statement)
+        {
+            analyze_statement_node(current->statement, expected_return_type);
+        }
+        current = current->next;
+    }
+}
+
+void analyze_statement_node(StatementNode *node, TypeKind expected_return_type)
+{
+    if (!node)
+        return;
+
+    switch (node->kind)
+    {
+    case STMT_VAR_DECL:
+        analyze_variable_declaration_node(node->data.var_decl_stmt);
+        break;
+    case STMT_ASSIGNMENT:
+        analyze_assignment_node(node->data.assignment_stmt);
+        break;
+    case STMT_IF:
+        analyze_if_statement_node(node->data.if_stmt, expected_return_type);
+        break;
+    case STMT_WHILE:
+        analyze_while_statement_node(node->data.while_stmt, expected_return_type);
+        break;
+    case STMT_PRINT:
+        analyze_print_statement_node(node->data.print_stmt);
+        break;
+    case STMT_RETURN:
+        analyze_return_statement_node(node->data.return_stmt, expected_return_type);
+        break;
+    case STMT_BLOCK:
+        analyze_block_statement_node(node->data.block_stmt, expected_return_type);
+        break;
+    case STMT_EXPRESSION:
+        if (node->data.expression_stmt)
+        {
+            analyze_expression_node(node->data.expression_stmt);
+        }
+        break;
+    default:
+        report_semantic_error("Unknown statement type encountered.", node->base.line_number);
+        break;
+    }
+}
+
+void analyze_variable_declaration_node(VariableDeclarationNode *node)
+{
+    if (!node)
+        return;
+
+    TypeKind var_declared_type = node->var_type->kind;
+
+    if (var_declared_type == TYPE_VOID)
+    {
+        report_semantic_error("Variables cannot be of type 'void'.", node->base.line_number);
+    }
+
+    // Check for initializer
+    if (node->initializer)
+    {
+        TypeKind initializer_type = analyze_expression_node(node->initializer);
+        if (initializer_type != TYPE_ERROR && var_declared_type != initializer_type)
+        {
+            char error_msg[256];
+            sprintf(error_msg, "Type mismatch: cannot initialize variable '%s' of type %d with expression of type %d.",
+                    node->identifier->name, var_declared_type, initializer_type);
+            report_semantic_error(error_msg, node->base.line_number);
+        }
+    }
+    else if (node->is_final)
+    {
+        report_semantic_error("'final' variable must be initialized at declaration.", node->base.line_number);
+    }
+
+    // Insert into symbol table
+    if (insert_symbol(node->identifier->name, var_declared_type, node->base.line_number, node->is_final, (AstNode *)node))
+    {
+        // Mark initialization status
+        SymbolTableEntry *entry = lookup_symbol_in_current_scope(node->identifier->name);
+        if (entry)
+        {
+            entry->is_initialized = (node->initializer != NULL) ? 1 : 0;
+        }
+    }
+}
+
+void analyze_assignment_node(AssignmentNode *node)
+{
+    if (!node)
+        return;
+
+    SymbolTableEntry *entry = lookup_symbol(node->target_identifier->name);
+    if (!entry)
+    {
+        char error_msg[100];
+        sprintf(error_msg, "Variable '%s' not declared.", node->target_identifier->name);
+        report_semantic_error(error_msg, node->base.line_number);
+        return;
+    }
+
+    if (entry->is_final)
+    {
+        char error_msg[100];
+        sprintf(error_msg, "Cannot assign to 'final' variable '%s'.", node->target_identifier->name);
+        report_semantic_error(error_msg, node->base.line_number);
+    }
+
+    TypeKind target_type;
+    if (node->array_index)
+    { // Array assignment: foo[idx] = val
+        if (entry->type != TYPE_INT_ARRAY)
+        {
+            char error_msg[100];
+            sprintf(error_msg, "Variable '%s' is not an array.", node->target_identifier->name);
+            report_semantic_error(error_msg, node->base.line_number);
+            return;
+        }
+        TypeKind index_type = analyze_expression_node(node->array_index);
+        if (index_type != TYPE_INT && index_type != TYPE_ERROR)
+        {
+            report_semantic_error("Array index must be an integer.", node->base.line_number);
+        }
+        target_type = TYPE_INT; // Elements of int[] are int
+    }
+    else
+    { // Simple variable assignment: foo = val
+        target_type = entry->type;
+    }
+
+    TypeKind value_type = analyze_expression_node(node->value);
+
+    if (value_type != TYPE_ERROR && target_type != value_type)
+    {
+        char error_msg[256];
+        sprintf(error_msg, "Type mismatch: cannot assign expression of type %d to target of type %d for '%s'.",
+                value_type, target_type, node->target_identifier->name);
+        report_semantic_error(error_msg, node->base.line_number);
+    }
+
+    // Mark variable as initialized after successful assignment
+    if (!node->array_index && entry)
+    {
+        entry->is_initialized = 1;
+    }
+}
+
+void analyze_if_statement_node(IfStatementNode *node, TypeKind expected_return_type)
+{
+    if (!node)
+        return;
+    TypeKind condition_type = analyze_expression_node(node->condition);
+    if (condition_type != TYPE_BOOLEAN && condition_type != TYPE_ERROR)
+    {
+        report_semantic_error("If condition must be a boolean expression.", node->base.line_number);
+    }
+    analyze_statement_node(node->then_branch, expected_return_type);
+    if (node->else_branch)
+    {
+        analyze_statement_node(node->else_branch, expected_return_type);
+    }
+}
+
+void analyze_while_statement_node(WhileStatementNode *node, TypeKind expected_return_type)
+{
+    if (!node)
+        return;
+    TypeKind condition_type = analyze_expression_node(node->condition);
+    if (condition_type != TYPE_BOOLEAN && condition_type != TYPE_ERROR)
+    {
+        report_semantic_error("While condition must be a boolean expression.", node->base.line_number);
+    }
+    analyze_statement_node(node->body, expected_return_type);
+}
+
+void analyze_print_statement_node(PrintStatementNode *node)
+{
+    if (!node)
+        return;
+    TypeKind expr_type = analyze_expression_node(node->expression);
+    // Check if expr_type is printable
+    if (expr_type != TYPE_INT && expr_type != TYPE_BOOLEAN && expr_type != TYPE_CHAR &&
+        expr_type != TYPE_STRING && expr_type != TYPE_FLOAT && expr_type != TYPE_ERROR)
+    {
+        char error_msg[100];
+        sprintf(error_msg, "Expression of type %d is not printable.", expr_type);
+        report_semantic_error(error_msg, node->base.line_number);
+    }
+}
+
+void analyze_return_statement_node(ReturnStatementNode *node, TypeKind expected_return_type)
+{
+    if (!node)
+        return;
+
+    if (expected_return_type == TYPE_VOID)
+    {
+        if (node->expression)
+        {
+            report_semantic_error("Cannot return a value from a void method.", node->base.line_number);
+            analyze_expression_node(node->expression); // Analyze for other errors
+        }
+    }
+    else
+    { // Non-void method
+        if (!node->expression)
+        {
+            char error_msg[100];
+            sprintf(error_msg, "Must return a value of type %d from this method.", expected_return_type);
+            report_semantic_error(error_msg, node->base.line_number);
+        }
+        else
+        {
+            TypeKind return_expr_type = analyze_expression_node(node->expression);
+            if (return_expr_type != TYPE_ERROR && return_expr_type != expected_return_type)
+            {
+                char error_msg[256];
+                sprintf(error_msg, "Type mismatch: cannot return expression of type %d from method expecting %d.",
+                        return_expr_type, expected_return_type);
+                report_semantic_error(error_msg, node->base.line_number);
+            }
+        }
+    }
+}
+
+TypeKind analyze_expression_node(ExpressionNode *node)
+{
+    if (!node)
+    {
+        return TYPE_ERROR; // Or handle as a fatal error
+    }
+
+    char error_msg[256];             // For sprintf messages
+    TypeKind expr_type = TYPE_ERROR; // Initialize with error type
+
+    switch (node->kind)
+    {
+    case EXPR_LITERAL:
+        if (!node->data.literal_expr)
+        {
+            // If the literal expression data is missing, it's an internal error
+            expr_type = TYPE_ERROR;
+            break; // Exit switch and set resolved_type below
+        }
+        switch (node->data.literal_expr->kind)
+        {
+        case LIT_INTEGER:
+            expr_type = TYPE_INT;
+            break;
+        case LIT_FLOAT:
+            expr_type = TYPE_FLOAT;
+            break;
+        case LIT_CHAR:
+            expr_type = TYPE_CHAR;
+            break;
+        case LIT_STRING:
+            expr_type = TYPE_STRING;
+            break;
+        default:
+            report_semantic_error("Unknown literal kind.", node->base.line_number);
+            expr_type = TYPE_ERROR;
+            break;
+        }
+        break; // Exit EXPR_LITERAL case
+
+    case EXPR_IDENTIFIER:
+    {
+        if (!node->data.identifier_expr || !node->data.identifier_expr->name)
+        {
+            expr_type = TYPE_ERROR;
+            break;
+        }
+
+        SymbolTableEntry *entry = lookup_symbol(node->data.identifier_expr->name);
+        if (!entry)
+        {
+            sprintf(error_msg, "Identifier '%s' not declared.", node->data.identifier_expr->name);
+            report_semantic_error(error_msg, node->base.line_number);
+            expr_type = TYPE_ERROR;
+        }
+        else
+        {
+            // Check if variable is initialized before use (good semantic check!)
+            if (!entry->is_initialized)
+            {
+                sprintf(error_msg, "Variable '%s' might not have been initialized.", entry->name);
+                report_semantic_error(error_msg, node->base.line_number);
+                // This is a warning, not necessarily a type error that stops IR generation,
+                // so we still return its declared type.
+            }
+            expr_type = entry->type; // Get type from symbol table
+        }
+        break;
+    }
+
+    case EXPR_ARRAY_ACCESS:
+    {
+        if (!node->data.array_access_expr.array_base || !node->data.array_access_expr.array_base->name)
+        {
+            expr_type = TYPE_ERROR;
+            break;
+        }
+
+        SymbolTableEntry *array_entry = lookup_symbol(node->data.array_access_expr.array_base->name);
+        if (!array_entry)
+        {
+            sprintf(error_msg, "Array identifier '%s' not declared.", node->data.array_access_expr.array_base->name);
+            report_semantic_error(error_msg, node->base.line_number);
+            expr_type = TYPE_ERROR;
+        }
+        else if (array_entry->type != TYPE_INT_ARRAY) // Assuming only int arrays
+        {
+            sprintf(error_msg, "Identifier '%s' is not an array.", array_entry->name);
+            report_semantic_error(error_msg, node->base.line_number);
+            expr_type = TYPE_ERROR;
+        }
+        else
+        {
+            // Check if array is initialized
+            if (!array_entry->is_initialized)
+            {
+                sprintf(error_msg, "Array '%s' might not have been initialized.", array_entry->name);
+                report_semantic_error(error_msg, node->base.line_number);
+            }
+            expr_type = TYPE_INT; // Element type of int array is INT
+        }
+
+        // Analyze the index expression's type
+        TypeKind index_type = analyze_expression_node(node->data.array_access_expr.index);
+        if (index_type != TYPE_INT && index_type != TYPE_ERROR)
+        {
+            report_semantic_error("Array index must be an integer.", node->base.line_number);
+            // If index is wrong type, the overall expression is still an error.
+            // If expr_type was already TYPE_ERROR, keep it.
+            if (expr_type != TYPE_ERROR)
+            {
+                expr_type = TYPE_ERROR;
+            }
+        }
+        // If index_type is TYPE_ERROR, it will propagate up.
+        break;
+    }
+
+    case EXPR_BINARY:
+    {
+        TypeKind left_type = analyze_expression_node(node->data.binary_expr.left);
+        TypeKind right_type = analyze_expression_node(node->data.binary_expr.right);
+
+        if (left_type == TYPE_ERROR || right_type == TYPE_ERROR)
+        {
+            expr_type = TYPE_ERROR; // Propagate error
+            break;
+        }
+
+        int op = node->data.binary_expr.op;
+
+        // Arithmetic operations: +, -, *, /, %
+        if (op == TOKEN_PLUS || op == TOKEN_MINUS || op == TOKEN_MULTIPLY || op == TOKEN_DIVIDE || op == TOKEN_MOD)
+        {
+            if (left_type == TYPE_INT && right_type == TYPE_INT)
+            {
+                expr_type = TYPE_INT;
+            }
+            else if (left_type == TYPE_FLOAT && right_type == TYPE_FLOAT)
+            {
+                expr_type = TYPE_FLOAT; // Added for float support
+            }
+            else if ((left_type == TYPE_INT && right_type == TYPE_FLOAT) || (left_type == TYPE_FLOAT && right_type == TYPE_INT))
+            {
+                expr_type = TYPE_FLOAT; // Type promotion for mixed int/float
+            }
+            else
+            {
+                sprintf(error_msg, "Arithmetic operands must be numeric (int/float) for operator %d.", op);
+                report_semantic_error(error_msg, node->base.line_number);
+                expr_type = TYPE_ERROR;
+            }
+        }
+        // Relational operations: <, <=, >, >=
+        else if (op == TOKEN_LT || op == TOKEN_LEQ || op == TOKEN_GT || op == TOKEN_GEQ)
+        {
+            if ((left_type == TYPE_INT && right_type == TYPE_INT) ||
+                (left_type == TYPE_FLOAT && right_type == TYPE_FLOAT) || // Added for float support
+                (left_type == TYPE_CHAR && right_type == TYPE_CHAR)      // Can compare chars
+            )
+            {
+                expr_type = TYPE_BOOLEAN;
+            }
+            else
+            {
+                sprintf(error_msg, "Relational operands must be compatible types for operator %d.", op);
+                report_semantic_error(error_msg, node->base.line_number);
+                expr_type = TYPE_ERROR;
+            }
+        }
+        // Equality operations: ==, !=
+        else if (op == TOKEN_EQ || op == TOKEN_NEQ)
+        {
+            // Allow equality for primitive types if they are the same
+            if (left_type == right_type &&
+                (left_type == TYPE_INT || left_type == TYPE_BOOLEAN || left_type == TYPE_CHAR || left_type == TYPE_FLOAT || left_type == TYPE_STRING))
+            {
+                expr_type = TYPE_BOOLEAN;
+            }
+            else
+            {
+                sprintf(error_msg, "Equality operands must be of the same compatible primitive type for operator %d.", op);
+                report_semantic_error(error_msg, node->base.line_number);
+                expr_type = TYPE_ERROR;
+            }
+        }
+        // Logical operations: &&, ||
+        else if (op == TOKEN_AND || op == TOKEN_OR)
+        {
+            if (left_type == TYPE_BOOLEAN && right_type == TYPE_BOOLEAN)
+            {
+                expr_type = TYPE_BOOLEAN;
+            }
+            else
+            {
+                sprintf(error_msg, "Logical operands must be booleans for operator %d.", op);
+                report_semantic_error(error_msg, node->base.line_number);
+                expr_type = TYPE_ERROR;
+            }
+        }
+        else
+        {
+            sprintf(error_msg, "Unsupported binary operator %d.", op);
+            report_semantic_error(error_msg, node->base.line_number);
+            expr_type = TYPE_ERROR;
+        }
+        break;
+    }
+
+    case EXPR_UNARY:
+    {
+        TypeKind operand_type = analyze_expression_node(node->data.unary_expr.operand);
+        if (operand_type == TYPE_ERROR)
+        {
+            expr_type = TYPE_ERROR;
+            break;
+        }
+
+        int op = node->data.unary_expr.op;
+        if (op == TOKEN_MINUS)
+        {
+            if (operand_type == TYPE_INT || operand_type == TYPE_FLOAT) // Allow unary minus on floats
+            {
+                expr_type = operand_type; // Type remains the same (int -> int, float -> float)
+            }
+            else
+            {
+                report_semantic_error("Operand for unary minus must be numeric (integer or float).", node->base.line_number);
+                expr_type = TYPE_ERROR;
+            }
+        }
+        else if (op == TOKEN_NOT)
+        {
+            if (operand_type == TYPE_BOOLEAN)
+            {
+                expr_type = TYPE_BOOLEAN;
+            }
+            else
+            {
+                report_semantic_error("Operand for logical NOT '!' must be a boolean.", node->base.line_number);
+                expr_type = TYPE_ERROR;
+            }
+        }
+        else
+        {
+            sprintf(error_msg, "Unsupported unary operator %d.", op);
+            report_semantic_error(error_msg, node->base.line_number);
+            expr_type = TYPE_ERROR;
+        }
+        break;
+    }
+
+    case EXPR_PARENTHESIZED:
+        if (!node->data.parenthesized_expr)
+        {
+            expr_type = TYPE_ERROR;
+            break;
+        }
+        expr_type = analyze_expression_node(node->data.parenthesized_expr);
+        break; // Exit PARENTHESIZED case
+
+    case EXPR_TRUE:
+    case EXPR_FALSE:
+        expr_type = TYPE_BOOLEAN;
+        break; // Exit BOOLEAN literal case
+
+    default:
+        report_semantic_error("Unknown expression kind encountered.", node->base.line_number);
+        expr_type = TYPE_ERROR;
+        break;
+    }
+
+
+    node->resolved_type = expr_type;
+
+    return expr_type;
+}
+
+symbol_table.c:
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "symbol_table.h"
+#include "ast.h" // For error reporting line numbers from nodes if needed
+
+// --- Global Scope Management ---
+Scope *current_scope = NULL;
+Scope *global_root_scope = NULL; // Defined here, declared extern in .h
+int next_scope_level = 0; // To assign scope levels
+
+// --- Internal list to track all created scopes for robust freeing ---
+// This dynamic array will hold pointers to all Scope structs allocated by create_scope.
+static Scope **all_created_scopes = NULL;
+static int num_created_scopes = 0;
+static int capacity_created_scopes = 0; // Initial capacity, will grow as needed
+
+// --- Helper Functions (Static for internal use) ---
+
+// Helper function to dynamically resize the all_created_scopes array
+static void resize_all_created_scopes_list() {
+    int new_capacity = (capacity_created_scopes == 0) ? 4 : capacity_created_scopes * 2;
+    Scope **temp = (Scope **)realloc(all_created_scopes, new_capacity * sizeof(Scope *));
+    if (!temp) {
+        fprintf(stderr, "Fatal: Memory reallocation failed for all_created_scopes list.\n");
+        exit(EXIT_FAILURE);
+    }
+    all_created_scopes = temp;
+    capacity_created_scopes = new_capacity;
+}
+
+// Helper function to free a single symbol entry (only its dynamically allocated members)
+void free_symbol_entry(SymbolTableEntry *entry) {
+    if (entry) {
+        free(entry->name); // Free the strdup'd name
+        // Note: entry->declaration_node is part of the AST and freed separately
+        free(entry);
+    }
+}
+
+// Helper function to free only the entries within a scope (but not the scope struct itself)
+static void free_scope_entries_only(Scope *scope) {
+    if (!scope) return;
+    SymbolTableEntry *current_entry = scope->head_entry;
+    SymbolTableEntry *next_entry;
+    while (current_entry != NULL) {
+        next_entry = current_entry->next;
+        free_symbol_entry(current_entry);
+        current_entry = next_entry;
+    }
+    scope->head_entry = NULL; // Mark as empty
+}
+
+// --- Symbol Table Operations ---
+
+// Initializes the symbol table system by creating the global scope.
+void init_symbol_table() {
+    // If already initialized (e.g., from a previous compilation unit), clean up first.
+    if (global_root_scope != NULL) {
+        free_symbol_table(); // Clean up existing state
+    }
+
+    // Create the global scope (level 0)
+    global_root_scope = create_scope(NULL); // Global scope has no parent
+    global_root_scope->scope_level = 0; // Explicitly set level 0
+    current_scope = global_root_scope; // Set current scope to global
+    next_scope_level = 1; // Next scope created will be level 1
+    // printf("Symbol table initialized. Global scope (level 0) entered.\n");
+}
+
+// Frees all allocated scopes and their symbol entries.
+void free_symbol_table() {
+    // Iterate through the list of all created scopes and free them
+    for (int i = 0; i < num_created_scopes; i++) {
+        if (all_created_scopes[i] != NULL) {
+            free_scope_entries_only(all_created_scopes[i]); // Free entries within this scope
+            free(all_created_scopes[i]); // Free the Scope struct itself
+            all_created_scopes[i] = NULL; // Mark as freed
+        }
+    }
+
+    // Free the list that tracked all scopes
+    if (all_created_scopes != NULL) {
+        free(all_created_scopes);
+        all_created_scopes = NULL;
+    }
+
+    // Reset global pointers and counters
+    current_scope = NULL;
+    global_root_scope = NULL;
+    num_created_scopes = 0;
+    capacity_created_scopes = 0;
+    next_scope_level = 0;
+    // printf("All symbol table memory freed.\n");
+}
+
+// Creates a new scope object.
+// This function is also responsible for tracking all created scopes for later cleanup.
+Scope *create_scope(Scope *parent_scope) {
+    Scope *new_scope = (Scope *)malloc(sizeof(Scope));
+    if (!new_scope) {
+        fprintf(stderr, "Fatal: Memory allocation failed for new scope.\n");
+        exit(EXIT_FAILURE);
+    }
+    new_scope->head_entry = NULL;
+    new_scope->parent = parent_scope;
+    new_scope->scope_level = next_scope_level++; // Assign level and increment for next
+
+    // Add this new scope to our global tracking list
+    if (num_created_scopes == capacity_created_scopes) {
+        resize_all_created_scopes_list();
+    }
+    all_created_scopes[num_created_scopes++] = new_scope;
+
+    return new_scope;
+}
+
+// Enters a new scope by creating it and setting it as the current scope.
+void enter_scope() {
+    current_scope = create_scope(current_scope); // New scope's parent is the old current_scope
+    // printf("Entered scope level %d. Total scopes created: %d.\n", current_scope->scope_level, num_created_scopes);
+}
+
+// Exits the current scope, moving current_scope to its parent.
+// Note: This function does NOT free the exited scope's memory.
+// Memory management is handled centrally by free_symbol_table().
+void exit_scope() {
+    if (!current_scope) {
+        fprintf(stderr, "Fatal: Attempting to exit a null scope.\n");
+        return;
+    }
+    Scope *exited_scope = current_scope; // Keep a pointer to the scope being exited
+    current_scope = current_scope->parent; // Move up to parent scope
+    next_scope_level--; // Decrement the level counter
+    // printf("Exited scope level %d, back to %d.\n", exited_scope->scope_level, current_scope ? current_scope->scope_level : -1);
+}
+
+// Inserts a symbol into the *current* scope.
+// Returns 1 on success, 0 if symbol already exists in the current scope (redeclaration error).
+int insert_symbol(const char *name, TypeKind type, int line_number, int is_final, AstNode *decl_node) {
+    if (!current_scope) {
+        fprintf(stderr, "Error line %d: Cannot insert symbol '%s', no current scope active.\n", line_number, name);
+        return 0; // Failure
+    }
+
+    // Check for redeclaration in the *current* scope only
+    if (lookup_symbol_in_current_scope(name) != NULL) {
+        fprintf(stderr, "Semantic Error line %d: Variable '%s' already declared in this scope.\n", line_number, name);
+        return 0; // Failure - redeclaration
+    }
+
+    SymbolTableEntry *new_entry = (SymbolTableEntry *)malloc(sizeof(SymbolTableEntry));
+    if (!new_entry) {
+        fprintf(stderr, "Fatal: Memory allocation failed for symbol entry '%s'.\n", name);
+        exit(EXIT_FAILURE);
+    }
+
+    new_entry->name = strdup(name); // Duplicate the name string
+    if (!new_entry->name) {
+        fprintf(stderr, "Fatal: Memory allocation failed for symbol name '%s'.\n", name);
+        free(new_entry);
+        exit(EXIT_FAILURE);
+    }
+    new_entry->type = type;
+    new_entry->line_number = line_number;
+    new_entry->is_final = is_final;
+    // Set is_initialized based on initializer presence, and if it's final (finals usually must be initialized)
+    new_entry->is_initialized = (decl_node && decl_node->type == NODE_VARIABLE_DECLARATION && ((VariableDeclarationNode *)decl_node)->initializer != NULL) || is_final;
+    new_entry->declaration_node = decl_node;
+    new_entry->next = NULL; // Initialize next pointer
+
+    // Add to the head of the current scope's linked list of entries
+    new_entry->next = current_scope->head_entry;
+    current_scope->head_entry = new_entry;
+
+    // printf("Inserted symbol '%s' (type %d) in scope level %d.\n", name, type, current_scope->scope_level);
+    return 1; // Success
+}
+
+// Looks up a symbol only in the *current* scope.
+// Returns a pointer to the SymbolTableEntry if found, otherwise NULL.
+SymbolTableEntry *lookup_symbol_in_current_scope(const char *name) {
+    if (!current_scope)
+        return NULL;
+    SymbolTableEntry *current_entry = current_scope->head_entry;
+    while (current_entry != NULL) {
+        if (strcmp(current_entry->name, name) == 0) {
+            return current_entry; // Found in current scope
+        }
+        current_entry = current_entry->next;
+    }
+    return NULL; // Not found in current scope
+}
+
+// Looks up a symbol by name, starting from the current scope and going up to parent scopes.
+// Returns a pointer to the SymbolTableEntry if found, otherwise NULL.
+SymbolTableEntry *lookup_symbol(const char *name) {
+    Scope *scope_to_search = current_scope; // Start searching from the current active scope
+    while (scope_to_search != NULL) {
+        SymbolTableEntry *entry = scope_to_search->head_entry;
+        while (entry != NULL) {
+            if (strcmp(entry->name, name) == 0) {
+                return entry; // Found the symbol
+            }
+            entry = entry->next;
+        }
+        scope_to_search = scope_to_search->parent; // Move to the parent (enclosing) scope
+    }
+    // printf("Lookup: Symbol '%s' not found in any accessible scope.\n", name);
+    return NULL; // Symbol not found in any scope
+}
+
+ast.c:
+#include "ast.h"
+#include "miniJava.tab.h" // Include Bison-generated token definitions
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Declare yytname as extern, provided by miniJava.tab.c when %token-table is used
+extern const char *const yytname[];
+extern const char *yysymbol_name(int);
+
+const char *get_token_name(int token)
+{
+    switch (token)
+    {
+    case TOKEN_INT_LIT:
+        return "INT_LITERAL";
+    case TOKEN_FLOAT_LIT:
+        return "FLOAT_LITERAL";
+    case TOKEN_CHAR_LIT:
+        return "CHAR_LITERAL";
+    case TOKEN_STRING_LIT:
+        return "STRING_LITERAL";
+    case TOKEN_ID:
+        return "IDENTIFIER";
+    case TOKEN_CLASS:
+        return "CLASS";
+    case TOKEN_PUBLIC:
+        return "PUBLIC";
+    case TOKEN_STATIC:
+        return "STATIC";
+    case TOKEN_VOID:
+        return "VOID";
+    case TOKEN_INT:
+        return "INT";
+    case TOKEN_CHAR:
+        return "CHAR";
+    case TOKEN_BOOLEAN:
+        return "BOOLEAN";
+    case TOKEN_IF:
+        return "IF";
+    case TOKEN_ELSE:
+        return "ELSE";
+    case TOKEN_WHILE:
+        return "WHILE";
+    case TOKEN_RETURN:
+        return "RETURN";
+    case TOKEN_TRUE:
+        return "TRUE";
+    case TOKEN_FALSE:
+        return "FALSE";
+    case TOKEN_FINAL:
+        return "FINAL";
+    case TOKEN_PRINT:
+        return "PRINT";
+    case TOKEN_PLUS:
+        return "PLUS";
+    case TOKEN_MINUS:
+        return "MINUS";
+    case TOKEN_MULTIPLY:
+        return "MULTIPLY";
+    case TOKEN_DIVIDE:
+        return "DIVIDE";
+    case TOKEN_MOD:
+        return "MOD";
+    case TOKEN_EQ:
+        return "EQUAL";
+    case TOKEN_NEQ:
+        return "NOT_EQUAL";
+    case TOKEN_LT:
+        return "LESS_THAN";
+    case TOKEN_GT:
+        return "GREATER_THAN";
+    case TOKEN_LEQ:
+        return "LESS_EQUAL";
+    case TOKEN_GEQ:
+        return "GREATER_EQUAL";
+    case TOKEN_AND:
+        return "AND";
+    case TOKEN_OR:
+        return "OR";
+    case TOKEN_NOT:
+        return "NOT";
+    case TOKEN_ASSIGN:
+        return "ASSIGN";
+    case TOKEN_LPAREN:
+        return "LEFT_PAREN";
+    case TOKEN_RPAREN:
+        return "RIGHT_PAREN";
+    case TOKEN_LBRACE:
+        return "LEFT_BRACE";
+    case TOKEN_RBRACE:
+        return "RIGHT_BRACE";
+    case TOKEN_LBRACKET:
+        return "LEFT_BRACKET";
+    case TOKEN_RBRACKET:
+        return "RIGHT_BRACKET";
+    case TOKEN_SEMICOLON:
+        return "SEMICOLON";
+    case TOKEN_COMMA:
+        return "COMMA";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+// --- Helper for creating base AST node ---
+AstNode *create_node(AstNodeType type, size_t size, int line_number)
+{
+    AstNode *node = (AstNode *)calloc(1, size);
+    if (!node)
+    {
+        perror("Failed to allocate AST node");
+        exit(EXIT_FAILURE);
+    }
+    node->type = type;
+    node->line_number = line_number;
+    return node;
+}
+
+// --- Creation Functions ---
+
+ProgramNode *create_program_node(ClassDeclarationNode *class_decl, int line_number)
+{
+    ProgramNode *node = (ProgramNode *)create_node(NODE_PROGRAM, sizeof(ProgramNode), line_number);
+    node->class_decl = class_decl;
+    return node;
+}
+
+ClassDeclarationNode *create_class_declaration_node(IdentifierNode *name, MainMethodNode *main_method, VariableDeclarationListNode *var_decls, int line_number)
+{
+    ClassDeclarationNode *node = (ClassDeclarationNode *)create_node(NODE_CLASS_DECLARATION, sizeof(ClassDeclarationNode), line_number);
+    node->name = name;
+    node->main_method = main_method;
+    node->var_decls = var_decls;
+    return node;
+}
+
+MainMethodNode *create_main_method_node(IdentifierNode *name, BlockStatementNode *body, int line_number)
+{
+    MainMethodNode *node = (MainMethodNode *)create_node(NODE_MAIN_METHOD, sizeof(MainMethodNode), line_number);
+    node->name = name;
+    node->body = body;
+    return node;
+}
+
+StatementListNode *create_statement_list_node(StatementNode *statement, StatementListNode *next)
+{
+    StatementListNode *node = (StatementListNode *)create_node(NODE_STATEMENT_LIST, sizeof(StatementListNode), statement ? statement->base.line_number : (next ? next->base.line_number : 0));
+    node->statement = statement;
+    node->next = next;
+    return node;
+}
+
+VariableDeclarationNode *create_variable_declaration_node(TypeNode *var_type, IdentifierNode *identifier, ExpressionNode *initializer, int is_final, int line_number)
+{
+    VariableDeclarationNode *node = (VariableDeclarationNode *)create_node(NODE_VARIABLE_DECLARATION, sizeof(VariableDeclarationNode), line_number);
+    node->var_type = var_type;
+    node->identifier = identifier;
+    node->initializer = initializer;
+    node->is_final = is_final;
+    return node;
+}
+
+VariableDeclarationListNode *create_variable_declaration_list_node(VariableDeclarationNode *declaration, VariableDeclarationListNode *next)
+{
+    VariableDeclarationListNode *node = (VariableDeclarationListNode *)create_node(NODE_VARIABLE_DECLARATION_LIST, sizeof(VariableDeclarationListNode), declaration ? declaration->base.line_number : (next ? next->base.line_number : 0));
+    node->declaration = declaration;
+    node->next = next;
+    return node;
+}
+
+AssignmentNode *create_assignment_node(IdentifierNode *target_identifier, ExpressionNode *array_index, ExpressionNode *value, int line_number)
+{
+    AssignmentNode *node = (AssignmentNode *)create_node(NODE_ASSIGNMENT, sizeof(AssignmentNode), line_number);
+    node->target_identifier = target_identifier;
+    node->array_index = array_index;
+    node->value = value;
+    return node;
+}
+
+IfStatementNode *create_if_node(ExpressionNode *condition, StatementNode *then_branch, StatementNode *else_branch, int line_number)
+{
+    IfStatementNode *node = (IfStatementNode *)create_node(NODE_IF_STATEMENT, sizeof(IfStatementNode), line_number);
+    node->condition = condition;
+    node->then_branch = then_branch;
+    node->else_branch = else_branch;
+    return node;
+}
+
+WhileStatementNode *create_while_node(ExpressionNode *condition, StatementNode *body, int line_number)
+{
+    WhileStatementNode *node = (WhileStatementNode *)create_node(NODE_WHILE_STATEMENT, sizeof(WhileStatementNode), line_number);
+    node->condition = condition;
+    node->body = body;
+    return node;
+}
+
+PrintStatementNode *create_print_node(ExpressionNode *expression, int line_number)
+{
+    PrintStatementNode *node = (PrintStatementNode *)create_node(NODE_PRINT_STATEMENT, sizeof(PrintStatementNode), line_number);
+    node->expression = expression;
+    return node;
+}
+
+ReturnStatementNode *create_return_node(ExpressionNode *expression, int line_number)
+{
+    ReturnStatementNode *node = (ReturnStatementNode *)create_node(NODE_RETURN_STATEMENT, sizeof(ReturnStatementNode), line_number);
+    node->expression = expression;
+    return node;
+}
+
+BlockStatementNode *create_block_node(StatementListNode *statements, int line_number)
+{
+    BlockStatementNode *node = (BlockStatementNode *)create_node(NODE_BLOCK_STATEMENT, sizeof(BlockStatementNode), line_number);
+    node->statements = statements;
+    return node;
+}
+
+// --- Statement Wrappers ---
+StatementNode *create_variable_declaration_statement(VariableDeclarationNode *var_decl, int line_number)
+{
+    StatementNode *node = (StatementNode *)create_node(NODE_STATEMENT_VAR_DECL, sizeof(StatementNode), line_number);
+    node->kind = STMT_VAR_DECL;
+    node->data.var_decl_stmt = var_decl;
+    return node;
+}
+
+StatementNode *create_assignment_statement(AssignmentNode *assignment, int line_number)
+{
+    StatementNode *node = (StatementNode *)create_node(NODE_STATEMENT_ASSIGNMENT, sizeof(StatementNode), line_number);
+    node->kind = STMT_ASSIGNMENT;
+    node->data.assignment_stmt = assignment;
+    return node;
+}
+
+StatementNode *create_if_statement_node(IfStatementNode *if_stmt, int line_number)
+{
+    StatementNode *node = (StatementNode *)create_node(NODE_STATEMENT_IF, sizeof(StatementNode), line_number);
+    node->kind = STMT_IF;
+    node->data.if_stmt = if_stmt;
+    return node;
+}
+
+StatementNode *create_while_statement_node(WhileStatementNode *while_stmt, int line_number)
+{
+    StatementNode *node = (StatementNode *)create_node(NODE_STATEMENT_WHILE, sizeof(StatementNode), line_number);
+    node->kind = STMT_WHILE;
+    node->data.while_stmt = while_stmt;
+    return node;
+}
+
+StatementNode *create_print_statement_node(PrintStatementNode *print_stmt, int line_number)
+{
+    StatementNode *node = (StatementNode *)create_node(NODE_STATEMENT_PRINT, sizeof(StatementNode), line_number);
+    node->kind = STMT_PRINT;
+    node->data.print_stmt = print_stmt;
+    return node;
+}
+
+StatementNode *create_return_statement_node(ReturnStatementNode *return_stmt, int line_number)
+{
+    StatementNode *node = (StatementNode *)create_node(NODE_STATEMENT_RETURN, sizeof(StatementNode), line_number);
+    node->kind = STMT_RETURN;
+    node->data.return_stmt = return_stmt;
+    return node;
+}
+
+StatementNode *create_block_statement_node(BlockStatementNode *block_stmt, int line_number)
+{
+    StatementNode *node = (StatementNode *)create_node(NODE_STATEMENT_BLOCK, sizeof(StatementNode), line_number);
+    node->kind = STMT_BLOCK;
+    node->data.block_stmt = block_stmt;
+    return node;
+}
+
+// --- Expression Functions ---
+ExpressionNode *create_binary_expression_node(ExpressionNode *left, int op, ExpressionNode *right, int line_number)
+{
+    ExpressionNode *node = (ExpressionNode *)create_node(NODE_EXPRESSION_BINARY, sizeof(ExpressionNode), line_number);
+    node->kind = EXPR_BINARY;
+    node->data.binary_expr.left = left;
+    node->data.binary_expr.op = op;
+    node->data.binary_expr.right = right;
+    return node;
+}
+
+ExpressionNode *create_unary_expression_node(int op, ExpressionNode *operand, int line_number)
+{
+    ExpressionNode *node = (ExpressionNode *)create_node(NODE_EXPRESSION_UNARY, sizeof(ExpressionNode), line_number);
+    node->kind = EXPR_UNARY;
+    node->data.unary_expr.op = op;
+    node->data.unary_expr.operand = operand;
+    return node;
+}
+
+ExpressionNode *create_literal_expression_node(LiteralNode *literal, int line_number)
+{
+    ExpressionNode *node = (ExpressionNode *)create_node(NODE_EXPRESSION_LITERAL, sizeof(ExpressionNode), line_number);
+    node->kind = EXPR_LITERAL;
+    node->data.literal_expr = literal;
+    return node;
+}
+
+ExpressionNode *create_identifier_expression_node(IdentifierNode *identifier, int line_number)
+{
+    ExpressionNode *node = (ExpressionNode *)create_node(NODE_EXPRESSION_IDENTIFIER, sizeof(ExpressionNode), line_number);
+    node->kind = EXPR_IDENTIFIER;
+    node->data.identifier_expr = identifier;
+    return node;
+}
+
+ExpressionNode *create_array_access_expression_node(IdentifierNode *array_base, ExpressionNode *index, int line_number)
+{
+    ExpressionNode *node = (ExpressionNode *)create_node(NODE_EXPRESSION_ARRAY_ACCESS, sizeof(ExpressionNode), line_number);
+    node->kind = EXPR_ARRAY_ACCESS;
+    node->data.array_access_expr.array_base = array_base;
+    node->data.array_access_expr.index = index;
+    return node;
+}
+
+ExpressionNode *create_parenthesized_expression_node(ExpressionNode *inner_expr, int line_number)
+{
+    ExpressionNode *node = (ExpressionNode *)create_node(NODE_EXPRESSION_PARENTHESIZED, sizeof(ExpressionNode), line_number);
+    node->kind = EXPR_PARENTHESIZED;
+    node->data.parenthesized_expr = inner_expr;
+    return node;
+}
+
+ExpressionNode *create_boolean_expression_node(int token_type, int line_number)
+{
+    ExpressionNode *node = (ExpressionNode *)create_node(NODE_EXPRESSION_BOOLEAN, sizeof(ExpressionNode), line_number);
+    node->kind = (token_type == TOKEN_TRUE) ? EXPR_TRUE : EXPR_FALSE;
+    return node;
+}
+
+// --- Other Node Creation Functions ---
+IdentifierNode *create_identifier_node(char *name, int line_number)
+{
+    IdentifierNode *node = (IdentifierNode *)create_node(NODE_IDENTIFIER, sizeof(IdentifierNode), line_number);
+    node->name = strdup(name); // Make a copy
+    return node;
+}
+
+LiteralNode *create_int_literal_node(int value, int line_number)
+{
+    LiteralNode *node = (LiteralNode *)create_node(NODE_LITERAL_INTEGER, sizeof(LiteralNode), line_number);
+    node->kind = LIT_INTEGER;
+    node->data.int_val = value;
+    return node;
+}
+
+LiteralNode *create_float_literal_node(float value, int line_number)
+{
+    LiteralNode *node = (LiteralNode *)create_node(NODE_LITERAL_FLOAT, sizeof(LiteralNode), line_number);
+    node->kind = LIT_FLOAT;
+    node->data.float_val = value;
+    return node;
+}
+
+LiteralNode *create_char_literal_node(char value, int line_number)
+{
+    LiteralNode *node = (LiteralNode *)create_node(NODE_LITERAL_CHAR, sizeof(LiteralNode), line_number);
+    node->kind = LIT_CHAR;
+    node->data.char_val = value;
+    return node;
+}
+
+LiteralNode *create_string_literal_node(char *value, int line_number)
+{
+    LiteralNode *node = (LiteralNode *)create_node(NODE_LITERAL_STRING, sizeof(LiteralNode), line_number);
+    node->kind = LIT_STRING;
+    node->data.string_val = strdup(value);
+    return node;
+}
+
+TypeNode *create_type_node(TypeKind kind, int line_number)
+{
+    TypeNode *node = (TypeNode *)create_node(NODE_TYPE_INT, sizeof(TypeNode), line_number); // Changed to a generic type node base
+    node->kind = kind;
+    // Set specific base type based on kind
+    switch (kind)
+    {
+    case TYPE_INT:
+        node->base.type = NODE_TYPE_INT;
+        break;
+    case TYPE_CHAR:
+        node->base.type = NODE_TYPE_CHAR;
+        break;
+    case TYPE_BOOLEAN:
+        node->base.type = NODE_TYPE_BOOLEAN;
+        break;
+    case TYPE_INT_ARRAY:
+        node->base.type = NODE_TYPE_INT_ARRAY;
+        break;
+    }
+    return node;
+}
+
+// --- Print Functions ---
+void print_indent(int indent)
+{
+    for (int i = 0; i < indent; i++)
+    {
+        printf("  "); // 2 spaces per indent level
+    }
+}
+
+void print_program_node(ProgramNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("ProgramNode (Line: %d)\n", node->base.line_number);
+    print_class_declaration(node->class_decl, indent + 1);
+}
+
+void print_class_declaration(ClassDeclarationNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("ClassDeclarationNode (Line: %d)\n", node->base.line_number);
+    print_indent(indent + 1);
+    printf("Name: ");
+    print_identifier(node->name, indent + 1);
+    printf("\n");
+    if (node->var_decls)
+    {
+        print_variable_declaration_list(node->var_decls, indent + 1);
+    }
+    print_main_method(node->main_method, indent + 1);
+}
+
+void print_main_method(MainMethodNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("MainMethodNode (Line: %d)\n", node->base.line_number);
+    print_indent(indent + 1);
+    printf("Name: ");
+    print_identifier(node->name, indent + 1);
+    printf("\n");
+    print_block_statement_node(node->body, indent + 1);
+}
+
+void print_statements(StatementListNode *list, int indent)
+{
+    if (!list)
+        return;
+    print_indent(indent);
+    printf("Statements:\n");
+    StatementListNode *current = list;
+    while (current)
+    {
+        print_statement(current->statement, indent + 1);
+        current = current->next;
+    }
+}
+
+void print_statement(StatementNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("Statement (Line: %d) - Kind: ", node->base.line_number);
+    switch (node->kind)
+    {
+    case STMT_VAR_DECL:
+        printf("Variable Declaration\n");
+        print_variable_declaration_node(node->data.var_decl_stmt, indent + 1);
+        break;
+    case STMT_ASSIGNMENT:
+        printf("Assignment\n");
+        print_assignment_node(node->data.assignment_stmt, indent + 1);
+        break;
+    case STMT_IF:
+        printf("If Statement\n");
+        print_if_statement_node(node->data.if_stmt, indent + 1);
+        break;
+    case STMT_WHILE:
+        printf("While Statement\n");
+        print_while_statement_node(node->data.while_stmt, indent + 1);
+        break;
+    case STMT_PRINT:
+        printf("Print Statement\n");
+        print_print_statement_node(node->data.print_stmt, indent + 1);
+        break;
+    case STMT_RETURN:
+        printf("Return Statement\n");
+        print_return_statement_node(node->data.return_stmt, indent + 1);
+        break;
+    case STMT_BLOCK:
+        printf("Block Statement\n");
+        print_block_statement_node(node->data.block_stmt, indent + 1);
+        break;
+    default:
+        printf("Unknown Statement Kind\n");
+        break;
+    }
+}
+
+void print_block_statement_node(BlockStatementNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("BlockStatement (Line: %d)\n", node->base.line_number);
+    print_statements(node->statements, indent + 1);
+}
+
+void print_variable_declaration_node(VariableDeclarationNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("VariableDeclaration (Line: %d) - %s ", node->base.line_number, node->is_final ? "final" : "");
+    print_type(node->var_type, indent); // Adjusted indent for inline
+    printf(" ");
+    print_identifier(node->identifier, indent); // Adjusted indent for inline
+    if (node->initializer)
+    {
+        printf(" = ");
+        print_expression(node->initializer, indent); // Adjusted indent for inline
+    }
+    printf("\n");
+}
+
+void print_variable_declaration_list(VariableDeclarationListNode *list, int indent)
+{
+    if (!list)
+        return;
+    print_indent(indent);
+    printf("Variable Declarations:\n");
+    VariableDeclarationListNode *current = list;
+    while (current)
+    {
+        print_indent(indent + 1);
+        printf("- VarDecl: ");
+        print_type(current->declaration->var_type, indent + 1);
+        printf(" ");
+        print_identifier(current->declaration->identifier, indent + 1);
+        if (current->declaration->initializer)
+        {
+            printf(" = ");
+            print_expression(current->declaration->initializer, indent + 1);
+        }
+        printf("\n");
+        current = current->next;
+    }
+}
+
+void print_assignment_node(AssignmentNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("Assignment (Line: %d): ", node->base.line_number);
+    print_identifier(node->target_identifier, indent);
+    if (node->array_index)
+    {
+        printf("[");
+        print_expression(node->array_index, indent);
+        printf("]");
+    }
+    printf(" = ");
+    print_expression(node->value, indent);
+    printf("\n");
+}
+
+void print_if_statement_node(IfStatementNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("If (Line: %d)\n", node->base.line_number);
+    print_indent(indent + 1);
+    printf("Condition: ");
+    print_expression(node->condition, indent + 1);
+    printf("\n");
+    print_indent(indent + 1);
+    printf("Then Branch:\n");
+    print_statement(node->then_branch, indent + 2);
+    if (node->else_branch)
+    {
+        print_indent(indent + 1);
+        printf("Else Branch:\n");
+        print_statement(node->else_branch, indent + 2);
+    }
+}
+
+void print_while_statement_node(WhileStatementNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("While (Line: %d)\n", node->base.line_number);
+    print_indent(indent + 1);
+    printf("Condition: ");
+    print_expression(node->condition, indent + 1);
+    printf("\n");
+    print_indent(indent + 1);
+    printf("Body:\n");
+    print_statement(node->body, indent + 2);
+}
+
+void print_print_statement_node(PrintStatementNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("Print (Line: %d): ", node->base.line_number);
+    print_expression(node->expression, indent);
+    printf("\n");
+}
+
+void print_return_statement_node(ReturnStatementNode *node, int indent)
+{
+    if (!node)
+        return;
+    print_indent(indent);
+    printf("Return (Line: %d): ", node->base.line_number);
+    if (node->expression)
+    {
+        print_expression(node->expression, indent);
+    }
+    else
+    {
+        printf("<void>");
+    }
+    printf("\n");
+}
+
+void print_expression(ExpressionNode *node, int indent)
+{
+    if (!node)
+        return;
+    // Expressions are usually printed inline, so no new line/indentation at start
+    switch (node->kind)
+    {
+    case EXPR_BINARY:
+        printf("(");
+        print_expression(node->data.binary_expr.left, indent);
+        printf("Token: %s\n", get_token_name(node->data.binary_expr.op));
+        print_expression(node->data.binary_expr.right, indent);
+        printf(")");
+        break;
+    case EXPR_UNARY:
+        printf("%s", get_token_name(node->data.unary_expr.op));
+        print_expression(node->data.unary_expr.operand, indent);
+        break;
+    case EXPR_LITERAL:
+        print_literal(node->data.literal_expr, indent);
+        break;
+    case EXPR_IDENTIFIER:
+        print_identifier(node->data.identifier_expr, indent);
+        break;
+    case EXPR_ARRAY_ACCESS:
+        print_identifier(node->data.array_access_expr.array_base, indent);
+        printf("[");
+        print_expression(node->data.array_access_expr.index, indent);
+        printf("]");
+        break;
+    case EXPR_PARENTHESIZED:
+        printf("(");
+        print_expression(node->data.parenthesized_expr, indent);
+        printf(")");
+        break;
+    case EXPR_TRUE:
+        printf("true");
+        break;
+    case EXPR_FALSE:
+        printf("false");
+        break;
+    default:
+        printf("<Unknown Expression>");
+        break;
+    }
+}
+
+void print_identifier(IdentifierNode *node, int indent)
+{
+    if (!node)
+        return;
+    printf("%s", node->name);
+}
+
+void print_literal(LiteralNode *node, int indent)
+{
+    if (!node)
+        return;
+    switch (node->kind)
+    {
+    case LIT_INTEGER:
+        printf("%d", node->data.int_val);
+        break;
+    case LIT_FLOAT:
+        printf("%f", node->data.float_val);
+        break;
+    case LIT_CHAR:
+        printf("'%c'", node->data.char_val);
+        break;
+    case LIT_STRING:
+        printf("\"%s\"", node->data.string_val);
+        break;
+    default:
+        printf("<Unknown Literal>");
+        break;
+    }
+}
+
+void print_type(TypeNode *node, int indent)
+{
+    if (!node)
+        return;
+    switch (node->kind)
+    {
+    case TYPE_INT:
+        printf("int");
+        break;
+    case TYPE_CHAR:
+        printf("char");
+        break;
+    case TYPE_BOOLEAN:
+        printf("boolean");
+        break;
+    case TYPE_INT_ARRAY:
+        printf("int[]");
+        break;
+    default:
+        printf("<Unknown Type>");
+        break;
+    }
+}
+
+void print_ast(ProgramNode *node, int indent)
+{
+    print_program_node(node, indent);
+}
+
+// --- Memory Management Functions ---
+void free_ast(ProgramNode *node)
+{
+    if (!node)
+        return;
+    free_class_declaration_node(node->class_decl);
+    free(node);
+}
+
+void free_class_declaration_node(ClassDeclarationNode *node)
+{
+    if (!node)
+        return;
+    free_identifier_node(node->name);
+    free_main_method_node(node->main_method);
+    free_variable_declaration_list_node(node->var_decls);
+    free(node);
+}
+
+void free_main_method_node(MainMethodNode *node)
+{
+    if (!node)
+        return;
+    free_identifier_node(node->name);
+    free_block_statement_node(node->body);
+    free(node);
+}
+
+void free_statement_list_node(StatementListNode *node)
+{
+    StatementListNode *current = node;
+    while (current)
+    {
+        StatementListNode *next = current->next;
+        free_statement_node(current->statement);
+        free(current);
+        current = next;
+    }
+}
+
+void free_statement_node(StatementNode *node)
+{
+    if (!node)
+        return;
+    switch (node->kind)
+    {
+    case STMT_VAR_DECL:
+        free_variable_declaration_node(node->data.var_decl_stmt);
+        break;
+    case STMT_ASSIGNMENT:
+        free_assignment_node(node->data.assignment_stmt);
+        break;
+    case STMT_IF:
+        free_if_statement_node(node->data.if_stmt);
+        break;
+    case STMT_WHILE:
+        free_while_statement_node(node->data.while_stmt);
+        break;
+    case STMT_PRINT:
+        free_print_statement_node(node->data.print_stmt);
+        break;
+    case STMT_RETURN:
+        free_return_statement_node(node->data.return_stmt);
+        break;
+    case STMT_BLOCK:
+        free_block_statement_node(node->data.block_stmt);
+        break;
+    default:
+        break; // Should not happen
+    }
+    free(node);
+}
+
+void free_variable_declaration_node(VariableDeclarationNode *node)
+{
+    if (!node)
+        return;
+    free_type_node(node->var_type);
+    free_identifier_node(node->identifier);
+    free_expression_node(node->initializer);
+    free(node);
+}
+
+void free_variable_declaration_list_node(VariableDeclarationListNode *node)
+{
+    VariableDeclarationListNode *current = node;
+    while (current)
+    {
+        VariableDeclarationListNode *next = current->next;
+        free_variable_declaration_node(current->declaration);
+        free(current);
+        current = next;
+    }
+}
+
+void free_assignment_node(AssignmentNode *node)
+{
+    if (!node)
+        return;
+    free_identifier_node(node->target_identifier);
+    free_expression_node(node->array_index);
+    free_expression_node(node->value);
+    free(node);
+}
+
+void free_if_statement_node(IfStatementNode *node)
+{
+    if (!node)
+        return;
+    free_expression_node(node->condition);
+    free_statement_node(node->then_branch);
+    free_statement_node(node->else_branch);
+    free(node);
+}
+
+void free_while_statement_node(WhileStatementNode *node)
+{
+    if (!node)
+        return;
+    free_expression_node(node->condition);
+    free_statement_node(node->body);
+    free(node);
+}
+
+void free_print_statement_node(PrintStatementNode *node)
+{
+    if (!node)
+        return;
+    free_expression_node(node->expression);
+    free(node);
+}
+
+void free_return_statement_node(ReturnStatementNode *node)
+{
+    if (!node)
+        return;
+    free_expression_node(node->expression);
+    free(node);
+}
+
+void free_block_statement_node(BlockStatementNode *node)
+{
+    if (!node)
+        return;
+    free_statement_list_node(node->statements);
+    free(node);
+}
+
+void free_expression_node(ExpressionNode *node)
+{
+    if (!node)
+        return;
+    switch (node->kind)
+    {
+    case EXPR_BINARY:
+        free_expression_node(node->data.binary_expr.left);
+        free_expression_node(node->data.binary_expr.right);
+        break;
+    case EXPR_UNARY:
+        free_expression_node(node->data.unary_expr.operand);
+        break;
+    case EXPR_LITERAL:
+        free_literal_node(node->data.literal_expr);
+        break;
+    case EXPR_IDENTIFIER:
+        free_identifier_node(node->data.identifier_expr);
+        break;
+    case EXPR_ARRAY_ACCESS:
+        free_identifier_node(node->data.array_access_expr.array_base);
+        free_expression_node(node->data.array_access_expr.index);
+        break;
+    case EXPR_PARENTHESIZED:
+        free_expression_node(node->data.parenthesized_expr);
+        break;
+    case EXPR_TRUE:
+    case EXPR_FALSE:
+        // No dynamic memory to free for these literals
+        break;
+    default:
+        break; // Should not happen
+    }
+    free(node);
+}
+
+void free_identifier_node(IdentifierNode *node)
+{
+    if (!node)
+        return;
+    free(node->name); // Free the strdup'd string
+    free(node);
+}
+
+void free_literal_node(LiteralNode *node)
+{
+    if (!node)
+        return;
+    if (node->kind == LIT_STRING)
+    {
+        free(node->data.string_val); // Free the strdup'd string for string literals
+    }
+    free(node);
+}
+
+void free_type_node(TypeNode *node)
+{
+    if (!node)
+        return;
+    free(node);
+}
