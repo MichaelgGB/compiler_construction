@@ -75,6 +75,7 @@ int main(int argc, char *argv[])
 
     printf("Lexing and parsing started for: %s\n", input_filename);
     // Call the parser. It will internally call the lexer.
+    printf("Printing Tokens and Lexemes: \n");
     int parse_result = yyparse();
 
     // Close yyin
@@ -95,6 +96,10 @@ int main(int argc, char *argv[])
             fprintf(stderr, "Error: AST root is NULL after successful parsing. No AST was built.\n");
             return 1;
         }
+
+        printf("Printing AST: ");
+
+        print_ast (root_ast_node, 0);
 
         init_symbol_table();
         init_tac_generator(); // Initialize TAC generator state

@@ -195,6 +195,7 @@ TacOperand create_tac_label_operand(const char *label_name)
 // --- Name Generation Helpers ---
 // These functions now use strdup to return allocated memory,
 // consistent with how operands store names.
+// returns a new temp name like _t3
 char *generate_new_temp_name()
 {
     char buffer[16]; // Temporary buffer for sprintf
@@ -207,6 +208,7 @@ char *generate_new_temp_name()
     return name;
 }
 
+//returns a new label like L2.
 char *generate_new_label_name()
 {
     char buffer[16]; // Temporary buffer for sprintf
